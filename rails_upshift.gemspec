@@ -19,8 +19,8 @@ Gem::Specification.new do |spec|
     spec.metadata["allowed_push_host"] = "https://rubygems.org"
 
     spec.metadata["homepage_uri"] = spec.homepage
-    spec.metadata["source_code_uri"] = "https://github.com/yourusername/rails_upshift"
-    spec.metadata["changelog_uri"] = "https://github.com/yourusername/rails_upshift/blob/main/CHANGELOG.md"
+    spec.metadata["source_code_uri"] = "https://github.com/ganeshkaliannan/rails_upshift"
+    spec.metadata["changelog_uri"] = "https://github.com/ganeshkaliannan/rails_upshift/blob/main/CHANGELOG.md"
   else
     raise "RubyGems 2.0 or newer is required to protect against " \
       "public gem pushes."
@@ -38,6 +38,7 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "bundler", "~> 2.0"
   spec.add_development_dependency "rake", "~> 10.0"
   spec.add_development_dependency "rspec", "~> 3.0"
+  spec.add_development_dependency "simplecov", "~> 0.21.2"
   
   spec.add_dependency "colorize", "~> 0.8"
 end
