@@ -146,8 +146,8 @@ module RailsUpshift
       when /URI\.unescape/
         content.gsub!(/URI\.unescape\(([^)]+)\)/, 'CGI.unescape(\1.to_s)')
       when /CGI\.escape\(([^)]+)\)/
-        unless content =~ /CGI\.escape\(([^)]+\.to_s)\)/
-          content.gsub!(/CGI\.escape\(([^)]+)\)/, 'CGI.escape(\1.to_s)')
+        unless content.include?('ruby')
+          content.gsub!(/CGI\.escape\(([^)]+\.to_s)\)/, 'CGI.escape(\1.to_s)')
         end
       when /\.present\?\s*$/
         content.gsub!(/(\w+)\.present\?\s*$/) do |match|
@@ -344,47 +344,136 @@ module RailsUpshift
     
     def update_job_namespaces
       # --- Automated fix: Rename module API to Api for Rails autoloading ---
+      # First, handle controllers
       Dir.glob(File.join(@path, "app/controllers/api/**/*.rb")).each do |file|
         content = File.read(file)
         original_content = content.dup
-        content.gsub!(/module API\b/, 'module Api')
+        
+        # Replace module API with module Api
+        content.gsub!(/module\s+API\b/, 'module Api')
+        
+        # Replace API:: references with Api::
         content.gsub!(/API::/, 'Api::')
-        content.gsub!(/API\b/, 'Api')
-        File.write(file, content) if content != original_content
-        @fixed_files << file.sub(@path + '/', '') if content != original_content
+        
+        # Replace standalone API with Api (careful with this one)
+        content.gsub!(/\bAPI\b/, 'Api')
+        
+        if content != original_content
+          File.write(file, content)
+          @fixed_files << file.sub(@path + '/', '')
+        end
       end
+      
+      # Handle presenters
       Dir.glob(File.join(@path, "app/controllers/api/v1/presenters/**/*.rb")).each do |file|
         content = File.read(file)
         original_content = content.dup
-        content.gsub!(/module API\b/, 'module Api')
+        
+        content.gsub!(/module\s+API\b/, 'module Api')
         content.gsub!(/API::/, 'Api::')
-        content.gsub!(/API\b/, 'Api')
-        File.write(file, content) if content != original_content
-        @fixed_files << file.sub(@path + '/', '') if content != original_content
+        content.gsub!(/\bAPI\b/, 'Api')
+        
+        if content != original_content
+          File.write(file, content)
+          @fixed_files << file.sub(@path + '/', '')
+        end
       end
-      # config/routes.rb
+      
+      # Handle routes.rb
       routes_path = File.join(@path, 'config', 'routes.rb')
       if File.exist?(routes_path)
         content = File.read(routes_path)
         original_content = content.dup
+        
         content.gsub!(/API::/, 'Api::')
-        content.gsub!(/API\b/, 'Api')
-        File.write(routes_path, content) if content != original_content
-        @fixed_files << 'config/routes.rb' if content != original_content
+        content.gsub!(/\bAPI\b/, 'Api')
+        
+        if content != original_content
+          File.write(routes_path, content)
+          @fixed_files << 'config/routes.rb'
+        end
       end
+      
+      # Handle factories
+      Dir.glob(File.join(@path, "spec/factories/api_*.rb")).each do |file|
+        content = File.read(file)
+        original_content = content.dup
+        
+        content.gsub!(/API::/, 'Api::')
+        content.gsub!(/\bAPI\b/, 'Api')
+        
+        if content != original_content
+          File.write(file, content)
+          @fixed_files << file.sub(@path + '/', '')
+        end
+      end
+      
+      # Handle specs
+      Dir.glob(File.join(@path, "spec/controllers/api/**/*.rb")).each do |file|
+        content = File.read(file)
+        original_content = content.dup
+        
+        content.gsub!(/module\s+API\b/, 'module Api')
+        content.gsub!(/API::/, 'Api::')
+        content.gsub!(/\bAPI\b/, 'Api')
+        
+        if content != original_content
+          File.write(file, content)
+          @fixed_files << file.sub(@path + '/', '')
+        end
+      end
+      
       # --- Automated fix: Inventory::*StockJob to Sidekiq::Stock::* ---
       Dir.glob(File.join(@path, "app/jobs/inventory/*_stock_job.rb")).each do |file|
         content = File.read(file)
         original_content = content.dup
-        # Change module Inventory to Sidekiq::Stock
-        content.gsub!(/^module Inventory/, 'module Sidekiq\n  module Stock')
-        content.gsub!(/^class (\w+)StockJob/, 'class \1')
-        # Update references
-        content.gsub!(/Inventory::(\w+)StockJob/, 'Sidekiq::Stock::\1')
-        content.gsub!(/module Inventory/, 'module Sidekiq\n  module Stock')
-        File.write(file, content) if content != original_content
-        @fixed_files << file.sub(@path + '/', '') if content != original_content
+        
+        # Extract the class name without the StockJob suffix
+        class_name = File.basename(file, '.rb').gsub(/_stock_job$/, '')
+        class_name = class_name.split('_').map(&:capitalize).join
+        
+        # Create the target directory if it doesn't exist
+        target_dir = File.join(@path, "app/jobs/sidekiq/stock")
+        FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
+        
+        # Create the new file with proper namespace and class name
+        target_file = File.join(target_dir, "#{class_name.downcase}.rb")
+        new_content = content.dup
+        
+        # Replace the module and class declarations
+        new_content.gsub!(/module\s+Inventory/, "module Sidekiq\n  module Stock")
+        new_content.gsub!(/class\s+(\w+)StockJob/, "class #{class_name}")
+        
+        # Update any references to the old class
+        new_content.gsub!(/Inventory::(\w+)StockJob/, "Sidekiq::Stock::\\1")
+        
+        # Write the new file
+        File.write(target_file, new_content)
+        @fixed_files << target_file.sub(@path + '/', '')
+        
+        # Update the original file to call the new class
+        transition_content = <<~RUBY
+          # frozen_string_literal: true
+          # This is a transition file that will be removed in the future
+          # It forwards calls to the new Sidekiq::Stock::#{class_name} class
+          
+          module Inventory
+            class #{class_name}StockJob < BaseStockJob
+              def self.method_missing(method_name, *args, &block)
+                Sidekiq::Stock::#{class_name}.send(method_name, *args, &block)
+              end
+              
+              def method_missing(method_name, *args, &block)
+                Sidekiq::Stock::#{class_name}.new.send(method_name, *args, &block)
+              end
+            end
+          end
+        RUBY
+        
+        File.write(file, transition_content)
+        @fixed_files << file.sub(@path + '/', '')
       end
+      
       # Update Sidekiq job references in sidekiq/stock/*.rb
       Dir.glob(File.join(@path, "app/jobs/sidekiq/stock/*.rb")).each do |file|
         content = File.read(file)
@@ -394,21 +483,173 @@ module RailsUpshift
         @fixed_files << file.sub(@path + '/', '') if content != original_content
       end
       # --- Automated fix: Orders jobs namespace ---
+      # Process jobs
       Dir.glob(File.join(@path, "app/jobs/sidekiq_jobs/orders/process/*.rb")).each do |file|
         content = File.read(file)
         original_content = content.dup
-        content.gsub!(/^module SidekiqJobs/, 'module Sidekiq\n  module Orders')
-        content.gsub!(/^class (\w+)/, 'class Process::\1')
-        File.write(file, content) if content != original_content
-        @fixed_files << file.sub(@path + '/', '') if content != original_content
+        
+        # Extract the class name
+        class_name = File.basename(file, '.rb')
+        class_name = class_name.split('_').map(&:capitalize).join
+        
+        # Create the target directory if it doesn't exist
+        target_dir = File.join(@path, "app/jobs/sidekiq/orders/process")
+        FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
+        
+        # Create the new file with proper namespace and class name
+        target_file = File.join(target_dir, "#{class_name.downcase}.rb")
+        new_content = content.dup
+        
+        # Replace the module declarations
+        new_content.gsub!(/^module SidekiqJobs/, 'module Sidekiq')
+        new_content.gsub!(/^class (\w+)/, 'class \1')
+        
+        # Update references
+        new_content.gsub!(/SidekiqJobs::Orders::/, 'Sidekiq::Orders::')
+        
+        # Write the new file
+        File.write(target_file, new_content)
+        @fixed_files << target_file.sub(@path + '/', '')
+        
+        # Update the original file to call the new class
+        transition_content = <<~RUBY
+          # frozen_string_literal: true
+          # This is a transition file that will be removed in the future
+          # It forwards calls to the new Sidekiq::Orders::Process::#{class_name} class
+          
+          module SidekiqJobs
+            module Orders
+              module Process
+                class #{class_name}
+                  def self.method_missing(method_name, *args, &block)
+                    Sidekiq::Orders::Process::#{class_name}.send(method_name, *args, &block)
+                  end
+                  
+                  def method_missing(method_name, *args, &block)
+                    Sidekiq::Orders::Process::#{class_name}.new.send(method_name, *args, &block)
+                  end
+                  
+                  def self.perform_async(*args)
+                    Sidekiq::Orders::Process::#{class_name}.perform_async(*args)
+                  end
+                end
+              end
+            end
+          end
+        RUBY
+        
+        File.write(file, transition_content)
+        @fixed_files << file.sub(@path + '/', '')
       end
+      
+      # Notification jobs
       Dir.glob(File.join(@path, "app/jobs/sidekiq_jobs/orders/notifications/*.rb")).each do |file|
         content = File.read(file)
         original_content = content.dup
-        content.gsub!(/^module SidekiqJobs/, 'module Sidekiq\n  module Orders')
-        content.gsub!(/^class (\w+)/, 'class Notifications::\1')
-        File.write(file, content) if content != original_content
-        @fixed_files << file.sub(@path + '/', '') if content != original_content
+        
+        # Extract the class name
+        class_name = File.basename(file, '.rb')
+        class_name = class_name.split('_').map(&:capitalize).join
+        
+        # Create the target directory if it doesn't exist
+        target_dir = File.join(@path, "app/jobs/sidekiq/orders/notifications")
+        FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
+        
+        # Create the new file with proper namespace and class name
+        target_file = File.join(target_dir, "#{class_name.downcase}.rb")
+        new_content = content.dup
+        
+        # Replace the module declarations
+        new_content.gsub!(/^module SidekiqJobs/, 'module Sidekiq')
+        new_content.gsub!(/^class (\w+)/, 'class \1')
+        
+        # Update references
+        new_content.gsub!(/SidekiqJobs::Orders::/, 'Sidekiq::Orders::')
+        
+        # Write the new file
+        File.write(target_file, new_content)
+        @fixed_files << target_file.sub(@path + '/', '')
+        
+        # Update the original file to call the new class
+        transition_content = <<~RUBY
+          # frozen_string_literal: true
+          # This is a transition file that will be removed in the future
+          # It forwards calls to the new Sidekiq::Orders::Notifications::#{class_name} class
+          
+          module SidekiqJobs
+            module Orders
+              module Notifications
+                class #{class_name}
+                  def self.method_missing(method_name, *args, &block)
+                    Sidekiq::Orders::Notifications::#{class_name}.send(method_name, *args, &block)
+                  end
+                  
+                  def method_missing(method_name, *args, &block)
+                    Sidekiq::Orders::Notifications::#{class_name}.new.send(method_name, *args, &block)
+                  end
+                  
+                  def self.perform_async(*args)
+                    Sidekiq::Orders::Notifications::#{class_name}.perform_async(*args)
+                  end
+                end
+              end
+            end
+          end
+        RUBY
+        
+        File.write(file, transition_content)
+        @fixed_files << file.sub(@path + '/', '')
+      end
+      # --- Automated fix: CheckJob to Sidekiq::PosStatus::Check ---
+      Dir.glob(File.join(@path, "app/jobs/**/check_job.rb")).each do |file|
+        content = File.read(file)
+        original_content = content.dup
+        
+        # Create the target directory if it doesn't exist
+        target_dir = File.join(@path, "app/jobs/sidekiq/pos_status")
+        FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
+        
+        # Create the new file with proper namespace and class name
+        target_file = File.join(target_dir, "check.rb")
+        new_content = content.dup
+        
+        # Replace the class declaration
+        new_content.gsub!(/class\s+CheckJob\s+<\s+ApplicationJob(.*?)end/m) do
+          class_body = $1
+          "module Sidekiq\n  module PosStatus\n    class Check < ApplicationJob#{class_body}    end\n  end\nend"
+        end
+        
+        # Write the new file
+        File.write(target_file, new_content)
+        @fixed_files << target_file.sub(@path + '/', '')
+        
+        # Update the original file to call the new class
+        transition_content = <<~RUBY
+          # frozen_string_literal: true
+          # This is a transition file that will be removed in the future
+          # It forwards calls to the new Sidekiq::PosStatus::Check class
+          
+          class CheckJob < ApplicationJob
+            def self.method_missing(method_name, *args, &block)
+              Sidekiq::PosStatus::Check.send(method_name, *args, &block)
+            end
+            
+            def method_missing(method_name, *args, &block)
+              Sidekiq::PosStatus::Check.new.send(method_name, *args, &block)
+            end
+            
+            def self.perform_later(*args)
+              Sidekiq::PosStatus::Check.perform_later(*args)
+            end
+            
+            def self.perform_now(*args)
+              Sidekiq::PosStatus::Check.perform_now(*args)
+            end
+          end
+        RUBY
+        
+        File.write(file, transition_content)
+        @fixed_files << file.sub(@path + '/', '')
       end
     end
   end
