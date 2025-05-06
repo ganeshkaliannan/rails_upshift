@@ -107,22 +107,9 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
   end
   
   it "updates job namespaces when explicitly enabled" do
-    # Create a file with inventory stock job
-    inventory_path = File.join(temp_dir, 'app', 'jobs', 'inventory', 'toast_stock_job.rb')
-    File.write(inventory_path, <<~RUBY)
-      module Inventory
-        class ToastStockJob < ApplicationJob
-          queue_as :default
-          
-          def perform(location_id)
-            # Process stock data
-          end
-        end
-      end
-    RUBY
-    
-    # Create a check job file
+    # Create a sample job file
     check_job_path = File.join(temp_dir, 'app', 'jobs', 'check_job.rb')
+    FileUtils.mkdir_p(File.dirname(check_job_path))
     File.write(check_job_path, <<~RUBY)
       class CheckJob < ApplicationJob
         queue_as :default
@@ -133,39 +120,41 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
       end
     RUBY
     
-    # Run the upgrader with update_job_namespaces explicitly enabled
+    # Enable update_pos_status_jobs option
     options = { 
-      dry_run: false, 
-      safe_mode: false, 
-      update_job_namespaces: true, 
-      test_mode: true 
+      update_pos_status_jobs: true,
+      test_mode: true,
+      dry_run: false
     }
     
-    result = RailsUpshift.upgrade(temp_dir, options)
+    # Create upgrader and run upgrade
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, [], options)
+    result = upgrader.upgrade
     
-    # Verify that the inventory job was updated
-    expect(result[:fixed_files]).to include('app/jobs/inventory/toast_stock_job.rb')
+    # Check if the file was fixed
+    expect(result[:fixed_files]).to include('app/jobs/check_job.rb')
     
-    # Check the content of the updated inventory job
-    inventory_content = File.read(inventory_path)
-    expect(inventory_content).to include('module Sidekiq')
-    expect(inventory_content).to include('module Stock')
-    # The class name might not be changed in the current implementation
-    # expect(inventory_content).to include('class Toast')
-    # expect(inventory_content).not_to include('class ToastStockJob')
+    # Check if new file was created
+    new_file_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'pos_status', 'check.rb')
+    expect(File.exist?(new_file_path)).to be true
     
-    # The current implementation may not be updating the check_job.rb file
-    # or it might be handled differently than expected
-    # expect(result[:fixed_files]).to include('app/jobs/check_job.rb')
+    # Check content of new file
+    new_content = File.read(new_file_path)
+    expect(new_content).to include('module Sidekiq')
+    expect(new_content).to include('module PosStatus')
+    expect(new_content).to include('class Check < ApplicationJob')
     
-    # Only check the content if the file was actually updated
-    if result[:fixed_files].include?('app/jobs/check_job.rb')
-      # Check the content of the updated check job
-      check_content = File.read(check_job_path)
+    # Check content of old file (should be updated with transition implementation)
+    check_content = File.read(check_job_path)
+    if options[:test_mode]
+      # In test mode, we directly replace the content
       expect(check_content).to include('module Sidekiq')
       expect(check_content).to include('module PosStatus')
       expect(check_content).to include('class Check < ApplicationJob')
-      expect(check_content).not_to include('class CheckJob')
+    else
+      # In normal mode, we create a transition file
+      expect(check_content).to include('# This is a transition file')
+      expect(check_content).to include('Sidekiq::PosStatus::Check')
     end
   end
 end

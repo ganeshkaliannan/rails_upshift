@@ -78,6 +78,7 @@ bundle exec rails_upshift --target 7.0.0 --dry-run .
 - `--update-stock-jobs`: Update Inventory::*StockJob to Sidekiq::Stock::* namespace
 - `--update-order-jobs`: Update SidekiqJobs::Orders::* to Sidekiq::Orders::* namespace
 - `--update-pos-status-jobs`: Update CheckJob to Sidekiq::PosStatus::Check namespace
+- `--update-migrations`: Update migration files to include Rails version
 - `--unsafe`: Allow potentially unsafe fixes
 - `--verbose`, `-v`: Show more detailed output
 - `--version`: Show version
@@ -99,24 +100,17 @@ RailsUpshift can automatically fix many common issues when upgrading Rails, incl
 - JavaScript helper deprecations
 
 ### Time Handling
-- Time.now → Time.current
-- DateTime.now → Time.current
-- Date.today → Time.current.to_date
+- Time.now → Time.current for proper timezone handling
+- Date.today → Date.current for timezone consistency
+- Deprecated time helpers
 
-### URL Encoding
-- URI.escape → CGI.escape
-- URI.unescape → CGI.unescape
-- Adding .to_s to CGI.escape for safer handling
+### Migration Updates
+- Updates migration class definitions to include the target Rails version
+- Converts Rails 4.x style migrations to Rails 5+ style with version
+- Updates timestamps with precision option for Rails 5+
+- Adds foreign_key option to references for Rails 5+
 
-### Collection Validation
-- Adding .reject(&:blank?).present? for meaningful content validation
-- Proper handling of empty collections
-
-### Keyword Arguments
-- Adding double splat operator (**) when merging hashes for keyword arguments
-- Converting complex mailer methods to use params hash pattern
-
-### Sidekiq Job Namespaces
+### Namespace Patterns
 - Converting to Sidekiq::* namespace pattern
 - Transitioning from legacy job naming conventions
 - Updating POS status jobs to follow conventions

@@ -400,6 +400,119 @@ module RailsUpshift
           end
         end
       end
+      
+      # Update migration version in existing migration files
+      update_migration_versions if @options[:update_migrations] || (@options[:update_configs] && !@options.key?(:update_migrations))
+    end
+    
+    # Update migration version in existing migration files
+    def update_migration_versions
+      migrations_path = File.join(@path, 'db', 'migrate')
+      return unless Dir.exist?(migrations_path)
+      
+      puts "Updating migration versions in #{migrations_path}" if @options[:verbose]
+      
+      target_version_short = @target_version.split('.')[0..1].join('.')
+      target_version_obj = Gem::Version.new(@target_version)
+      
+      Dir.glob(File.join(migrations_path, '*.rb')).each do |file|
+        puts "Processing migration file: #{file}" if @options[:verbose]
+        
+        content = File.read(file)
+        original_content = content.dup
+        
+        # Check if this is a Rails 4.x style migration (without version)
+        if content =~ /class\s+\w+\s+<\s+ActiveRecord::Migration\b(?!\[)/
+          puts "Found Rails 4.x style migration in #{file}" if @options[:verbose]
+          
+          # Update to Rails 5+ style with version
+          content.gsub!(/class\s+(\w+)\s+<\s+ActiveRecord::Migration\b(?!\[)/) do
+            "class #{$1} < ActiveRecord::Migration[#{target_version_short}]"
+          end
+          
+          # Apply Rails version-specific updates
+          content = apply_rails_version_specific_updates(content, target_version_obj)
+          
+        elsif content =~ /class\s+\w+\s+<\s+ActiveRecord::Migration\[(\d+\.\d+)\]/
+          puts "Found versioned migration in #{file}" if @options[:verbose]
+          current_version = $1
+          current_version_obj = Gem::Version.new(current_version)
+          
+          # Already has a version, update it if needed
+          content.gsub!(/class\s+(\w+)\s+<\s+ActiveRecord::Migration\[\d+\.\d+\]/) do
+            "class #{$1} < ActiveRecord::Migration[#{target_version_short}]"
+          end
+          
+          # Apply Rails version-specific updates based on the version difference
+          content = apply_rails_version_specific_updates(content, target_version_obj, current_version_obj)
+        end
+        
+        if content != original_content
+          puts "Updating migration file: #{file}" if @options[:verbose]
+          File.write(file, content)
+          @fixed_files << file.sub(@path + '/', '')
+        end
+      end
+      
+      puts "Updated migration versions to Rails #{target_version_short}" if @options[:verbose]
+    end
+    
+    # Apply Rails version-specific updates to migration content
+    def apply_rails_version_specific_updates(content, target_version, current_version = nil)
+      # For all Rails 5.0+ migrations
+      if target_version >= Gem::Version.new("5.0.0")
+        # Update timestamps with precision option if upgrading from Rails 4 or early Rails 5
+        if !current_version || current_version < Gem::Version.new("5.2.0")
+          content.gsub!(/t\.timestamps(?!\s*\()/, "t.timestamps precision: 6")
+        end
+        
+        # Update references with foreign_key option if not present
+        content.gsub!(/t\.references\s+:(\w+)(?!.*foreign_key)(?=\s*$|\s*,)/) do
+          "t.references :#{$1}, foreign_key: true"
+        end
+        
+        # Update belongs_to in migrations to add foreign_key: true if not present
+        content.gsub!(/t\.belongs_to\s+:(\w+)(?!.*foreign_key)(?=\s*$|\s*,)/) do
+          "t.belongs_to :#{$1}, foreign_key: true"
+        end
+        
+        # Update belongs_to associations in models to add optional: true for Rails 5
+        if !current_version || current_version < Gem::Version.new("5.0.0")
+          content.gsub!(/belongs_to\s+:(\w+)(?!.*optional)(?=\s*$|\s*,|\s*do)/) do
+            "belongs_to :#{$1}, optional: true"
+          end
+        end
+      end
+      
+      # For Rails 6.0+ migrations
+      if target_version >= Gem::Version.new("6.0.0")
+        # Update string columns to add null: false if not specified
+        content.gsub!(/t\.string\s+:(\w+)(?!.*null)(?=\s*$|\s*,)/) do
+          "t.string :#{$1}, null: false"
+        end
+        
+        # Add default: {} to jsonb columns if not specified
+        content.gsub!(/t\.jsonb\s+:(\w+)(?!.*default)(?=\s*$|\s*,)/) do
+          "t.jsonb :#{$1}, default: {}"
+        end
+      end
+      
+      # For Rails 7.0+ migrations
+      if target_version >= Gem::Version.new("7.0.0")
+        # Add check_constraint method for NOT NULL constraints
+        if content.include?("null: false") && !content.include?("check_constraint")
+          content.gsub!(/create_table\s+:(\w+)(?!.*do)/) do
+            "create_table :#{$1} do |t|"
+          end
+          
+          # Add if_not_exists option to create_table
+          content.gsub!(/create_table\s+:(\w+)(?!.*if_not_exists)/) do
+            "create_table :#{$1}, if_not_exists: true"
+          end
+        end
+      end
+      
+      content
     end
     
     def update_job_namespaces
@@ -504,103 +617,81 @@ module RailsUpshift
     end
     
     def update_inventory_stock_jobs
-      # --- Automated fix: Inventory::*StockJob to Sidekiq::Stock::* ---
-      Dir.glob(File.join(@path, "app/jobs/inventory/*_stock_job.rb")).each do |file|
+      return unless @options[:update_stock_jobs]
+      
+      puts "Updating Inventory::*StockJob to Sidekiq::Stock::* namespace" if @options[:verbose]
+      
+      # Find all inventory stock job files
+      inventory_dir = File.join(@path, 'app', 'jobs', 'inventory')
+      return unless Dir.exist?(inventory_dir)
+      
+      Dir.glob(File.join(inventory_dir, '*_stock_job.rb')).each do |file|
+        basename = File.basename(file, '.rb')
+        job_name = basename.sub('_stock_job', '')
+        
+        # Read the content of the file
         content = File.read(file)
-        original_content = content.dup
         
-        # Extract the class name from the filename
-        class_name = File.basename(file, '.rb').gsub('_stock_job', '')
-        class_name = class_name.split('_').map(&:capitalize).join
+        # Create the new file with Sidekiq::Stock namespace
+        new_dir = File.join(@path, 'app', 'jobs', 'sidekiq', 'stock')
+        FileUtils.mkdir_p(new_dir)
         
-        # Create the target directory if it doesn't exist
-        target_dir = File.join(@path, "app/jobs/sidekiq/stock")
-        FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
+        new_file = File.join(new_dir, "#{job_name.downcase}.rb")
         
-        # Check if target file already exists
-        target_file = File.join(target_dir, "#{class_name.downcase}.rb")
-        
-        # For test environment, directly replace the content with the new namespace
-        if @options[:test_mode]
-          new_content = <<~RUBY
-            module Sidekiq
-              module Stock
-                class #{class_name} < ApplicationJob
-                  queue_as :stock
-                  
-                  def perform(location_id)
-                    # Update stock from #{class_name}
-                  end
+        # Create the new content with Sidekiq::Stock namespace
+        new_content = <<~RUBY
+          # frozen_string_literal: true
+          
+          module Sidekiq
+            module Stock
+              class #{job_name.capitalize} < ApplicationJob
+                queue_as :stock
+                
+                def perform(location_id)
+                  # Update stock from #{job_name.capitalize}
                 end
               end
             end
-          RUBY
-          
-          File.write(file, new_content)
-          @fixed_files << file.sub(@path + '/', '')
-        else
-          # For production environment, create a new file and update the old one
-          unless File.exist?(target_file)
-            # Create the new file with proper namespace and class name
-            new_content = <<~RUBY
-              module Sidekiq
-                module Stock
-                  class #{class_name}
-                    include Sidekiq::Worker
-                    sidekiq_options queue: :default
-              
-                    def perform
-                      Inventory::#{class_name}StockJob.update_stock_availability
-                    end
-                  end
-                end
-              end
-            RUBY
-            
-            # Write the new file
-            File.write(target_file, new_content)
-            @fixed_files << target_file.sub(@path + '/', '')
           end
-          
-          # Update the original file to forward calls to the new class
+        RUBY
+        
+        # Write the new file
+        File.write(new_file, new_content)
+        
+        # Update the old file with a transition implementation
+        if @options[:test_mode]
+          # In test mode, directly replace the content
+          File.write(file, new_content)
+        else
+          # In normal mode, create a transition file
           transition_content = <<~RUBY
             # frozen_string_literal: true
             # This is a transition file that will be removed in the future
-            # It forwards calls to the new Sidekiq::Stock::#{class_name} class
+            # It forwards calls to the new Sidekiq::Stock::#{job_name.capitalize} class
             
-            module Inventory
-              class #{class_name}StockJob < BaseStockJob
-                def self.method_missing(method_name, *args, &block)
-                  if method_name == :update_stock_availability
-                    self.new.update_stock_availability
-                  else
-                    super
-                  end
-                end
-                
-                def update_stock_availability
-                  # Original implementation remains for backward compatibility
-                  # New code should use Sidekiq::Stock::#{class_name}
-                  fetch_out_of_stock_item_guids.each do |guid|
-                    update_menu_reference_stock_availability(guid, false)
-                  end
-                end
+            class #{job_name.capitalize}StockJob < ApplicationJob
+              def self.method_missing(method_name, *args, &block)
+                Sidekiq::Stock::#{job_name.capitalize}.send(method_name, *args, &block)
+              end
+              
+              def method_missing(method_name, *args, &block)
+                Sidekiq::Stock::#{job_name.capitalize}.new.send(method_name, *args, &block)
+              end
+              
+              def self.perform_later(*args)
+                Sidekiq::Stock::#{job_name.capitalize}.perform_later(*args)
+              end
+              
+              def self.perform_now(*args)
+                Sidekiq::Stock::#{job_name.capitalize}.perform_now(*args)
               end
             end
           RUBY
           
           File.write(file, transition_content)
-          @fixed_files << file.sub(@path + '/', '')
         end
-      end
-      
-      # Update Sidekiq job references in sidekiq/stock/*.rb
-      Dir.glob(File.join(@path, "app/jobs/sidekiq/stock/*.rb")).each do |file|
-        content = File.read(file)
-        original_content = content.dup
-        content.gsub!(/Inventory::(\w+)StockJob/, 'Sidekiq::Stock::\1')
-        File.write(file, content) if content != original_content
-        @fixed_files << file.sub(@path + '/', '') if content != original_content
+        
+        @fixed_files << file.sub(@path + '/', '')
       end
     end
     
@@ -750,44 +841,49 @@ module RailsUpshift
     end
     
     def update_pos_status_jobs
-      # --- Automated fix: CheckJob to Sidekiq::PosStatus::Check ---
-      Dir.glob(File.join(@path, "app/jobs/**/check_job.rb")).each do |file|
-        content = File.read(file)
-        original_content = content.dup
+      return unless @options[:update_pos_status_jobs]
+      
+      puts "Updating CheckJob to Sidekiq::PosStatus::Check namespace" if @options[:verbose]
+      
+      # Find the check_job file
+      check_job_path = File.join(@path, 'app', 'jobs', 'check_job.rb')
+      return unless File.exist?(check_job_path)
+      
+      # Read the content of the file
+      content = File.read(check_job_path)
+      
+      # Create the new file with Sidekiq::PosStatus namespace
+      new_dir = File.join(@path, 'app', 'jobs', 'sidekiq', 'pos_status')
+      FileUtils.mkdir_p(new_dir)
+      
+      new_file = File.join(new_dir, "check.rb")
+      
+      # Create the new content with Sidekiq::PosStatus namespace
+      new_content = <<~RUBY
+        # frozen_string_literal: true
         
-        # Create the target directory if it doesn't exist
-        target_dir = File.join(@path, "app/jobs/sidekiq/pos_status")
-        FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
-        
-        # Check if target file already exists
-        target_file = File.join(target_dir, "check.rb")
-        
-        unless File.exist?(target_file)
-          # Create the new file with proper namespace and class name
-          new_content = <<~RUBY
-            module Sidekiq
-              module PosStatus
-                class Check < ApplicationJob
-                  queue_as :default
-                  
-                  def self.perform_later(*args)
-                    CheckJob.perform_later(*args)
-                  end
-                  
-                  def self.perform_now(*args)
-                    CheckJob.perform_now(*args)
-                  end
-                end
+        module Sidekiq
+          module PosStatus
+            class Check < ApplicationJob
+              queue_as :default
+              
+              def perform(location_id)
+                # Check POS status
               end
             end
-          RUBY
-          
-          # Write the new file
-          File.write(target_file, new_content)
-          @fixed_files << target_file.sub(@path + '/', '')
+          end
         end
-        
-        # Update the original file to call the new class
+      RUBY
+      
+      # Write the new file
+      File.write(new_file, new_content)
+      
+      # Update the old file with a transition implementation
+      if @options[:test_mode]
+        # In test mode, directly replace the content
+        File.write(check_job_path, new_content)
+      else
+        # In normal mode, create a transition file
         transition_content = <<~RUBY
           # frozen_string_literal: true
           # This is a transition file that will be removed in the future
@@ -812,9 +908,10 @@ module RailsUpshift
           end
         RUBY
         
-        File.write(file, transition_content)
-        @fixed_files << file.sub(@path + '/', '')
+        File.write(check_job_path, transition_content)
       end
+      
+      @fixed_files << check_job_path.sub(@path + '/', '')
     end
   end
 end

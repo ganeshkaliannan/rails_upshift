@@ -18,7 +18,8 @@ module RailsUpshift
         update_api_module: false,
         update_stock_jobs: false,
         update_order_jobs: false,
-        update_pos_status_jobs: false
+        update_pos_status_jobs: false,
+        update_migrations: false
       }
       @path = Dir.pwd
       parse_options
@@ -110,6 +111,10 @@ module RailsUpshift
         
         opts.on("--update-pos-status-jobs", "Update CheckJob to Sidekiq::PosStatus::Check namespace") do
           @options[:update_pos_status_jobs] = true
+        end
+        
+        opts.on("--update-migrations", "Update migration files to include Rails version") do
+          @options[:update_migrations] = true
         end
 
         opts.on("--version", "Show version") do

@@ -48,45 +48,55 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
   end
   
   it 'fixes Sidekiq job namespace transitions (Inventory::*StockJob -> Sidekiq::Stock::*)' do
-    # Create a stock job with the old namespace
+    # Create a sample stock job file
     stock_job_path = File.join(temp_dir, 'app', 'jobs', 'inventory', 'toast_stock_job.rb')
+    FileUtils.mkdir_p(File.dirname(stock_job_path))
     File.write(stock_job_path, <<~RUBY)
-      module Inventory
-        class ToastStockJob < ApplicationJob
-          queue_as :stock
-          
-          def perform(location_id)
-            # Update stock from Toast
-          end
+      class ToastStockJob < ApplicationJob
+        queue_as :stock
+        
+        def perform(location_id)
+          # Update stock from Toast
         end
       end
     RUBY
     
-    # Create an issue that matches the pattern in the fix_issue method
-    issues = [
-      {
-        file: 'app/jobs/inventory/toast_stock_job.rb',
-        message: "Consider using Sidekiq::Stock namespace instead of Inventory",
-        pattern: 'module\\s+Inventory'
-      }
-    ]
-    
-    # Enable update_job_namespaces option
-    options = { update_job_namespaces: true, test_mode: true }
+    # Enable update_stock_jobs option
+    options = { 
+      update_stock_jobs: true,
+      test_mode: true,
+      dry_run: false
+    }
     
     # Create upgrader and run upgrade
-    upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, [], options)
     result = upgrader.upgrade
     
     # Check if the file was fixed
     expect(result[:fixed_files]).to include('app/jobs/inventory/toast_stock_job.rb')
     
-    # Check content
-    stock_content = File.read(stock_job_path)
-    expect(stock_content).to include('module Sidekiq')
-    expect(stock_content).to include('module Stock')
-    expect(stock_content).to include('class ToastStockJob < ApplicationJob')
-    expect(stock_content).not_to include('module Inventory')
+    # Check if new file was created
+    new_file_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'stock', 'toast.rb')
+    expect(File.exist?(new_file_path)).to be true
+    
+    # Check content of new file
+    new_content = File.read(new_file_path)
+    expect(new_content).to include('module Sidekiq')
+    expect(new_content).to include('module Stock')
+    expect(new_content).to include('class Toast < ApplicationJob')
+    
+    # Check content of old file (should be updated with transition implementation)
+    old_content = File.read(stock_job_path)
+    if options[:test_mode]
+      # In test mode, we directly replace the content
+      expect(old_content).to include('module Sidekiq')
+      expect(old_content).to include('module Stock')
+      expect(old_content).to include('class Toast < ApplicationJob')
+    else
+      # In normal mode, we create a transition file
+      expect(old_content).to include('# This is a transition file')
+      expect(old_content).to include('Sidekiq::Stock::Toast')
+    end
   end
   
   it 'fixes POS status job namespace updates (CheckJob -> Sidekiq::PosStatus::Check)' do
