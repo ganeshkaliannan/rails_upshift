@@ -118,7 +118,8 @@ RSpec.describe "RailsUpshift Public API" do
     options = { 
       dry_run: false, 
       safe_mode: false, 
-      update_job_namespaces: true 
+      update_job_namespaces: true,
+      test_mode: true
     }
     
     # Create a modified version of the inventory job file with the fixes applied

@@ -74,7 +74,8 @@ RSpec.describe "RailsUpshift Integration" do
       options = { 
         dry_run: false, 
         safe_mode: false, 
-        update_job_namespaces: true 
+        update_job_namespaces: true,
+        test_mode: true
       }
       
       result = RailsUpshift.upgrade(temp_dir, options)

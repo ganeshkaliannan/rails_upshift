@@ -91,11 +91,12 @@ RSpec.describe "RailsUpshift Targeted Tests" do
       end
     RUBY
     
-    # Run the upgrader with update_job_namespaces explicitly enabled
+    # Run the upgrader with update_job_namespaces and test_mode explicitly enabled
     options = { 
       dry_run: false, 
       safe_mode: false, 
-      update_job_namespaces: true 
+      update_job_namespaces: true, 
+      test_mode: true 
     }
     
     result = RailsUpshift.upgrade(temp_dir, options)

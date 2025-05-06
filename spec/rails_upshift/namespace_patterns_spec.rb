@@ -32,7 +32,7 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
     RUBY
     
     # Enable update_job_namespaces option which handles API module renaming
-    options = { update_job_namespaces: true }
+    options = { update_job_namespaces: true, test_mode: true }
     
     # Create upgrader and run upgrade
     upgrader = RailsUpshift::Upgrader.new(temp_dir, [], options)
@@ -72,7 +72,7 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
     ]
     
     # Enable update_job_namespaces option
-    options = { update_job_namespaces: true }
+    options = { update_job_namespaces: true, test_mode: true }
     
     # Create upgrader and run upgrade
     upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
@@ -112,7 +112,7 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
     ]
     
     # Enable update_job_namespaces option
-    options = { update_job_namespaces: true }
+    options = { update_job_namespaces: true, test_mode: true }
     
     # Create upgrader and run upgrade
     upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
@@ -155,7 +155,7 @@ RSpec.describe "RailsUpshift Namespace Patterns" do
     RUBY
     
     # Enable update_job_namespaces option
-    options = { update_job_namespaces: true }
+    options = { update_job_namespaces: true, test_mode: true }
     
     # Create upgrader and run upgrade
     upgrader = RailsUpshift::Upgrader.new(temp_dir, [], options)

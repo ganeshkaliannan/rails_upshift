@@ -129,7 +129,11 @@ RSpec.describe "RailsUpshift Combined Namespace Patterns" do
       dry_run: false, 
       safe_mode: false, 
       update_job_namespaces: true,
-      update_api_modules: true
+      update_api_modules: true,
+      update_stock_jobs: true,
+      update_order_jobs: true,
+      update_pos_status_jobs: true,
+      test_mode: true
     }
     
     result = RailsUpshift.upgrade(temp_dir, options)

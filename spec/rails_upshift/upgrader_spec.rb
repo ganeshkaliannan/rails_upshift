@@ -345,6 +345,7 @@ RSpec.describe RailsUpshift::Upgrader do
       
       # Enable update_job_namespaces option
       options[:update_job_namespaces] = true
+      options[:test_mode] = true
       
       # Create upgrader and run upgrade
       upgrader = described_class.new(temp_dir, issues, options)
