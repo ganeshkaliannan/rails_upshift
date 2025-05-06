@@ -14,7 +14,11 @@ module RailsUpshift
         update_gems: false,
         update_configs: false,
         update_form_helpers: false,
-        update_job_namespaces: false
+        update_job_namespaces: false,
+        update_api_module: false,
+        update_stock_jobs: false,
+        update_order_jobs: false,
+        update_pos_status_jobs: false
       }
       @path = Dir.pwd
       parse_options
@@ -88,8 +92,24 @@ module RailsUpshift
           @options[:update_form_helpers] = true
         end
 
-        opts.on("-j", "--update-job-namespaces", "Update Sidekiq job namespaces to follow conventions") do
+        opts.on("-j", "--update-job-namespaces", "Update all Sidekiq job namespaces to follow conventions") do
           @options[:update_job_namespaces] = true
+        end
+        
+        opts.on("--update-api-module", "Rename API module to Api for Rails autoloading") do
+          @options[:update_api_module] = true
+        end
+        
+        opts.on("--update-stock-jobs", "Update Inventory::*StockJob to Sidekiq::Stock::* namespace") do
+          @options[:update_stock_jobs] = true
+        end
+        
+        opts.on("--update-order-jobs", "Update SidekiqJobs::Orders::* to Sidekiq::Orders::* namespace") do
+          @options[:update_order_jobs] = true
+        end
+        
+        opts.on("--update-pos-status-jobs", "Update CheckJob to Sidekiq::PosStatus::Check namespace") do
+          @options[:update_pos_status_jobs] = true
         end
 
         opts.on("--version", "Show version") do

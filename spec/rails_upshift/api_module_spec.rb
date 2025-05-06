@@ -153,4 +153,119 @@ RSpec.describe "RailsUpshift API Module Renaming" do
       plugin_manager.instance_variable_set(:@plugins, {})
     end
   end
+  
+  it "correctly renames API module in all relevant files" do
+    # Create controller file with API module
+    controller_path = File.join(temp_dir, 'app', 'controllers', 'api', 'base.rb')
+    File.write(controller_path, <<~RUBY)
+      module API
+        class Base < ApplicationController
+          # Base API controller
+        end
+      end
+    RUBY
+    
+    # Create presenter file with API module
+    presenter_dir = File.join(temp_dir, 'app', 'controllers', 'api', 'v1', 'presenters')
+    FileUtils.mkdir_p(presenter_dir)
+    presenter_path = File.join(presenter_dir, 'user_presenter.rb')
+    File.write(presenter_path, <<~RUBY)
+      module API
+        module V1
+          module Presenters
+            class UserPresenter
+              # User presenter
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create routes file with API references
+    routes_path = File.join(temp_dir, 'config', 'routes.rb')
+    File.write(routes_path, <<~RUBY)
+      Rails.application.routes.draw do
+        namespace :api do
+          namespace :v1 do
+            resources :users, only: [:index, :show]
+          end
+        end
+        
+        # Direct API reference
+        mount API::V1::Users => '/api/v1/users'
+      end
+    RUBY
+    
+    # Create factory file with API references
+    factory_path = File.join(temp_dir, 'spec', 'factories', 'api_users.rb')
+    File.write(factory_path, <<~RUBY)
+      FactoryBot.define do
+        factory :api_user, class: API::V1::User do
+          name { "Test User" }
+        end
+      end
+    RUBY
+    
+    # Create spec file with API references
+    spec_dir = File.join(temp_dir, 'spec', 'controllers', 'api', 'v1')
+    FileUtils.mkdir_p(spec_dir)
+    spec_path = File.join(spec_dir, 'users_controller_spec.rb')
+    File.write(spec_path, <<~RUBY)
+      require 'rails_helper'
+      
+      RSpec.describe API::V1::UsersController, type: :controller do
+        describe "GET #index" do
+          it "returns a success response" do
+            get :index
+            expect(response).to be_successful
+          end
+        end
+      end
+    RUBY
+    
+    # Create the upgrader with update_job_namespaces option
+    analyzer = RailsUpshift::Analyzer.new(temp_dir)
+    issues = analyzer.analyze
+    
+    options = { 
+      update_job_namespaces: true,
+      verbose: false,
+      safe_mode: false
+    }
+    
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
+    result = upgrader.upgrade
+    
+    # Verify that all files were updated
+    expect(result[:fixed_files]).to include('app/controllers/api/base.rb')
+    expect(result[:fixed_files]).to include('app/controllers/api/v1/presenters/user_presenter.rb')
+    expect(result[:fixed_files]).to include('config/routes.rb')
+    expect(result[:fixed_files]).to include('spec/factories/api_users.rb')
+    expect(result[:fixed_files]).to include('spec/controllers/api/v1/users_controller_spec.rb')
+    
+    # Verify controller file content
+    controller_content = File.read(controller_path)
+    expect(controller_content).to include('module Api')
+    expect(controller_content).not_to include('module API')
+    
+    # Verify presenter file content
+    presenter_content = File.read(presenter_path)
+    expect(presenter_content).to include('module Api')
+    expect(presenter_content).not_to include('module API')
+    
+    # Verify routes file content
+    routes_content = File.read(routes_path)
+    expect(routes_content).to include('mount Api::V1::Users')
+    expect(routes_content).not_to include('mount API::V1::Users')
+    
+    # Verify factory file content
+    factory_content = File.read(factory_path)
+    expect(factory_content).to include('class: Api::V1::User')
+    expect(factory_content).not_to include('class: API::V1::User')
+    
+    # Verify spec file content
+    spec_content = File.read(spec_path)
+    expect(spec_content).to include('RSpec.describe Api::V1::UsersController')
+    expect(spec_content).not_to include('RSpec.describe API::V1::UsersController')
+  end
 end

@@ -111,4 +111,140 @@ RSpec.describe "PosStatusCheckSpec" do
     expect(updated_content).not_to include('location.ignore_pos_offline')
     expect(updated_content).not_to include('location.pos_offline_enabled')
   end
+  
+  it "handles existing files correctly during transition for CheckJob" do
+    # Create directories for both old and new namespaces
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs'))
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'pos_status'))
+    
+    # Create a file with old namespace
+    old_file_path = File.join(temp_dir, 'app', 'jobs', 'check_job.rb')
+    File.write(old_file_path, <<~RUBY)
+      class CheckJob < ApplicationJob
+        queue_as :pos_status
+        
+        def perform(location_id)
+          # Check POS status
+          check_pos_status(location_id)
+        end
+        
+        def check_pos_status(location_id)
+          # Implementation details
+          puts "Checking POS status for location \#{location_id}"
+        end
+      end
+    RUBY
+    
+    # Create the upgrader with update_job_namespaces option
+    analyzer = RailsUpshift::Analyzer.new(temp_dir)
+    issues = analyzer.analyze
+    
+    options = { 
+      update_job_namespaces: true,
+      verbose: false,
+      safe_mode: false
+    }
+    
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
+    result = upgrader.upgrade
+    
+    # Verify that the original file was updated
+    expect(result[:fixed_files]).to include('app/jobs/check_job.rb')
+    
+    # Verify that a new file was created
+    new_file_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'pos_status', 'check.rb')
+    expect(File.exist?(new_file_path)).to be true
+    
+    # Verify the content of the new file
+    new_file_content = File.read(new_file_path)
+    expect(new_file_content).to include('module Sidekiq')
+    expect(new_file_content).to include('module PosStatus')
+    expect(new_file_content).to include('class Check < ApplicationJob')
+    expect(new_file_content).to include('def self.perform_later(*args)')
+    expect(new_file_content).to include('CheckJob.perform_later(*args)')
+    expect(new_file_content).to include('def self.perform_now(*args)')
+    expect(new_file_content).to include('CheckJob.perform_now(*args)')
+    
+    # Verify that the transition file was created correctly
+    transition_content = File.read(old_file_path)
+    expect(transition_content).to include('# This is a transition file that will be removed in the future')
+    expect(transition_content).to include('def self.method_missing(method_name, *args, &block)')
+    expect(transition_content).to include('Sidekiq::PosStatus::Check.send(method_name, *args, &block)')
+    expect(transition_content).to include('def method_missing(method_name, *args, &block)')
+    expect(transition_content).to include('Sidekiq::PosStatus::Check.new.send(method_name, *args, &block)')
+    expect(transition_content).to include('def self.perform_later(*args)')
+    expect(transition_content).to include('Sidekiq::PosStatus::Check.perform_later(*args)')
+    expect(transition_content).to include('def self.perform_now(*args)')
+    expect(transition_content).to include('Sidekiq::PosStatus::Check.perform_now(*args)')
+  end
+  
+  it "handles existing target files correctly during transition for CheckJob" do
+    # Create directories for both old and new namespaces
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs'))
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'pos_status'))
+    
+    # Create a file with old namespace
+    old_file_path = File.join(temp_dir, 'app', 'jobs', 'check_job.rb')
+    File.write(old_file_path, <<~RUBY)
+      class CheckJob < ApplicationJob
+        queue_as :pos_status
+        
+        def perform(location_id)
+          # Check POS status
+          check_pos_status(location_id)
+        end
+        
+        def check_pos_status(location_id)
+          # Implementation details
+          puts "Checking POS status for location \#{location_id}"
+        end
+      end
+    RUBY
+    
+    # Create an existing file with new namespace
+    new_file_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'pos_status', 'check.rb')
+    File.write(new_file_path, <<~RUBY)
+      module Sidekiq
+        module PosStatus
+          class Check < ApplicationJob
+            queue_as :pos_status
+            
+            def perform(location_id)
+              # Already migrated implementation
+              CheckJob.perform_now(location_id)
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create the upgrader with update_job_namespaces option
+    analyzer = RailsUpshift::Analyzer.new(temp_dir)
+    issues = analyzer.analyze
+    
+    options = { 
+      update_job_namespaces: true,
+      verbose: false,
+      safe_mode: false
+    }
+    
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
+    result = upgrader.upgrade
+    
+    # Verify that the original file was updated
+    expect(result[:fixed_files]).to include('app/jobs/check_job.rb')
+    
+    # Verify that the existing file was not modified
+    new_file_content_after = File.read(new_file_path)
+    expect(new_file_content_after).to include('module Sidekiq')
+    expect(new_file_content_after).to include('module PosStatus')
+    expect(new_file_content_after).to include('class Check < ApplicationJob')
+    expect(new_file_content_after).to include('CheckJob.perform_now(location_id)')
+    
+    # Verify that the transition file was created correctly
+    transition_content = File.read(old_file_path)
+    expect(transition_content).to include('# This is a transition file that will be removed in the future')
+    expect(transition_content).to include('def self.method_missing(method_name, *args, &block)')
+    expect(transition_content).to include('Sidekiq::PosStatus::Check.send(method_name, *args, &block)')
+  end
 end

@@ -73,7 +73,11 @@ bundle exec rails_upshift --target 7.0.0 --dry-run .
 - `--update-gems`, `-g`: Update Gemfile for target Rails version
 - `--update-configs`, `-c`: Update configuration files for target Rails version
 - `--update-form-helpers`, `-f`: Update form helpers (form_for to form_with)
-- `--update-job-namespaces`, `-j`: Update Sidekiq job namespaces to follow conventions
+- `--update-job-namespaces`, `-j`: Update all Sidekiq job namespaces to follow conventions
+- `--update-api-module`: Rename API module to Api for Rails autoloading
+- `--update-stock-jobs`: Update Inventory::*StockJob to Sidekiq::Stock::* namespace
+- `--update-order-jobs`: Update SidekiqJobs::Orders::* to Sidekiq::Orders::* namespace
+- `--update-pos-status-jobs`: Update CheckJob to Sidekiq::PosStatus::Check namespace
 - `--unsafe`: Allow potentially unsafe fixes
 - `--verbose`, `-v`: Show more detailed output
 - `--version`: Show version
@@ -116,6 +120,28 @@ RailsUpshift can automatically fix many common issues when upgrading Rails, incl
 - Converting to Sidekiq::* namespace pattern
 - Transitioning from legacy job naming conventions
 - Updating POS status jobs to follow conventions
+
+RailsUpshift supports several specific namespace transitions:
+
+1. **Stock Jobs**: Transitions from `Inventory::*StockJob` to `Sidekiq::Stock::*`
+   - Creates new files in app/jobs/sidekiq/stock/ with proper namespaces
+   - Updates original files to forward calls during transition
+   - Preserves backward compatibility
+
+2. **Order Processing Jobs**: Transitions from `SidekiqJobs::Orders::*` to `Sidekiq::Orders::*`
+   - Handles both Process and Notification jobs
+   - Maintains proper module nesting and naming conventions
+   - Ensures backward compatibility during transition
+
+3. **POS Status Jobs**: Transitions from `CheckJob` to `Sidekiq::PosStatus::Check`
+   - Updates job class to follow established namespace pattern
+   - Handles ActiveJob-specific methods like perform_later and perform_now
+   - Maintains backward compatibility
+
+4. **API Module Renaming**: Renames `API` module to `Api` for Rails autoloading
+   - Updates controllers, presenters, routes, factories, and specs
+   - Ensures compatibility with Rails' constant autoloading mechanism
+   - Maintains consistent naming across the codebase
 
 ### Client Configuration
 - Storing boolean values as strings ("true"/"false")

@@ -316,4 +316,78 @@ RSpec.describe "RailsUpshift Stock Jobs Namespace Transition" do
       plugin_manager.instance_variable_set(:@plugins, {})
     end
   end
+  
+  it "handles existing files correctly during transition" do
+    # Create a file with old namespace
+    old_file_path = File.join(temp_dir, 'app', 'jobs', 'inventory', 'toast_stock_job.rb')
+    File.write(old_file_path, <<~RUBY)
+      module Inventory
+        class ToastStockJob < BaseStockJob
+          def fetch_out_of_stock_item_guids
+            client.get_out_of_stock_guids
+          end
+          
+          def update_stock_availability
+            fetch_out_of_stock_item_guids.each do |guid|
+              update_menu_reference_stock_availability(guid, false)
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create an existing file with new namespace
+    new_file_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'stock', 'toast.rb')
+    File.write(new_file_path, <<~RUBY)
+      module Sidekiq
+        module Stock
+          class Toast
+            include Sidekiq::Worker
+            sidekiq_options queue: :default
+            
+            def perform
+              Inventory::ToastStockJob.update_stock_availability
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create the upgrader with update_job_namespaces option
+    analyzer = RailsUpshift::Analyzer.new(temp_dir)
+    issues = analyzer.analyze
+    
+    options = { 
+      update_job_namespaces: true,
+      verbose: false,
+      safe_mode: false
+    }
+    
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
+    result = upgrader.upgrade
+    
+    # Verify that the original file was updated
+    expect(result[:fixed_files]).to include('app/jobs/inventory/toast_stock_job.rb')
+    
+    # Verify that the existing file was updated to use the new namespace
+    # This is expected behavior due to the reference updating code in the upgrader
+    new_file_content_after = File.read(new_file_path)
+    expect(new_file_content_after).to include('module Sidekiq')
+    expect(new_file_content_after).to include('module Stock')
+    expect(new_file_content_after).to include('class Toast')
+    expect(new_file_content_after).to include('include Sidekiq::Worker')
+    expect(new_file_content_after).to include('sidekiq_options queue: :default')
+    expect(new_file_content_after).to include('def perform')
+    expect(new_file_content_after).to include('Sidekiq::Stock::Toast.update_stock_availability')
+    expect(new_file_content_after).not_to include('Inventory::ToastStockJob.update_stock_availability')
+    
+    # Verify that the transition file was created correctly
+    transition_content = File.read(old_file_path)
+    expect(transition_content).to include('# This is a transition file that will be removed in the future')
+    expect(transition_content).to include('def self.method_missing(method_name, *args, &block)')
+    expect(transition_content).to include('if method_name == :update_stock_availability')
+    expect(transition_content).to include('self.new.update_stock_availability')
+    expect(transition_content).to include('def update_stock_availability')
+    expect(transition_content).to include('fetch_out_of_stock_item_guids.each do |guid|')
+  end
 end

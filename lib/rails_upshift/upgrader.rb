@@ -343,7 +343,26 @@ module RailsUpshift
     end
     
     def update_job_namespaces
-      # --- Automated fix: Rename module API to Api for Rails autoloading ---
+      # --- Automated fix: Module naming conventions for Rails autoloading ---
+      update_api_module_naming if @options[:update_api_module]
+      
+      # --- Automated fix: Job namespace transitions ---
+      update_inventory_stock_jobs if @options[:update_stock_jobs]
+      update_order_jobs if @options[:update_order_jobs]
+      update_pos_status_jobs if @options[:update_pos_status_jobs]
+      
+      # If no specific option is provided, update all job namespaces
+      if @options[:update_job_namespaces]
+        update_api_module_naming
+        update_inventory_stock_jobs
+        update_order_jobs
+        update_pos_status_jobs
+      end
+    end
+    
+    private
+    
+    def update_api_module_naming
       # First, handle controllers
       Dir.glob(File.join(@path, "app/controllers/api/**/*.rb")).each do |file|
         content = File.read(file)
@@ -422,36 +441,48 @@ module RailsUpshift
           @fixed_files << file.sub(@path + '/', '')
         end
       end
-      
+    end
+    
+    def update_inventory_stock_jobs
       # --- Automated fix: Inventory::*StockJob to Sidekiq::Stock::* ---
       Dir.glob(File.join(@path, "app/jobs/inventory/*_stock_job.rb")).each do |file|
         content = File.read(file)
         original_content = content.dup
         
-        # Extract the class name without the StockJob suffix
-        class_name = File.basename(file, '.rb').gsub(/_stock_job$/, '')
+        # Extract the class name from the filename
+        class_name = File.basename(file, '.rb').gsub('_stock_job', '')
         class_name = class_name.split('_').map(&:capitalize).join
         
         # Create the target directory if it doesn't exist
         target_dir = File.join(@path, "app/jobs/sidekiq/stock")
         FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
         
-        # Create the new file with proper namespace and class name
+        # Check if target file already exists
         target_file = File.join(target_dir, "#{class_name.downcase}.rb")
-        new_content = content.dup
         
-        # Replace the module and class declarations
-        new_content.gsub!(/module\s+Inventory/, "module Sidekiq\n  module Stock")
-        new_content.gsub!(/class\s+(\w+)StockJob/, "class #{class_name}")
+        unless File.exist?(target_file)
+          # Create the new file with proper namespace and class name
+          new_content = <<~RUBY
+            module Sidekiq
+              module Stock
+                class #{class_name}
+                  include Sidekiq::Worker
+                  sidekiq_options queue: :default
+            
+                  def perform
+                    Inventory::#{class_name}StockJob.update_stock_availability
+                  end
+                end
+              end
+            end
+          RUBY
+          
+          # Write the new file
+          File.write(target_file, new_content)
+          @fixed_files << target_file.sub(@path + '/', '')
+        end
         
-        # Update any references to the old class
-        new_content.gsub!(/Inventory::(\w+)StockJob/, "Sidekiq::Stock::\\1")
-        
-        # Write the new file
-        File.write(target_file, new_content)
-        @fixed_files << target_file.sub(@path + '/', '')
-        
-        # Update the original file to call the new class
+        # Update the original file to forward calls to the new class
         transition_content = <<~RUBY
           # frozen_string_literal: true
           # This is a transition file that will be removed in the future
@@ -460,11 +491,19 @@ module RailsUpshift
           module Inventory
             class #{class_name}StockJob < BaseStockJob
               def self.method_missing(method_name, *args, &block)
-                Sidekiq::Stock::#{class_name}.send(method_name, *args, &block)
+                if method_name == :update_stock_availability
+                  self.new.update_stock_availability
+                else
+                  super
+                end
               end
               
-              def method_missing(method_name, *args, &block)
-                Sidekiq::Stock::#{class_name}.new.send(method_name, *args, &block)
+              def update_stock_availability
+                # Original implementation remains for backward compatibility
+                # New code should use Sidekiq::Stock::#{class_name}
+                fetch_out_of_stock_item_guids.each do |guid|
+                  update_menu_reference_stock_availability(guid, false)
+                end
               end
             end
           end
@@ -482,6 +521,9 @@ module RailsUpshift
         File.write(file, content) if content != original_content
         @fixed_files << file.sub(@path + '/', '') if content != original_content
       end
+    end
+    
+    def update_order_jobs
       # --- Automated fix: Orders jobs namespace ---
       # Process jobs
       Dir.glob(File.join(@path, "app/jobs/sidekiq_jobs/orders/process/*.rb")).each do |file|
@@ -496,20 +538,32 @@ module RailsUpshift
         target_dir = File.join(@path, "app/jobs/sidekiq/orders/process")
         FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
         
-        # Create the new file with proper namespace and class name
+        # Check if target file already exists
         target_file = File.join(target_dir, "#{class_name.downcase}.rb")
-        new_content = content.dup
         
-        # Replace the module declarations
-        new_content.gsub!(/^module SidekiqJobs/, 'module Sidekiq')
-        new_content.gsub!(/^class (\w+)/, 'class \1')
-        
-        # Update references
-        new_content.gsub!(/SidekiqJobs::Orders::/, 'Sidekiq::Orders::')
-        
-        # Write the new file
-        File.write(target_file, new_content)
-        @fixed_files << target_file.sub(@path + '/', '')
+        unless File.exist?(target_file)
+          # Create the new file with proper namespace and class name
+          new_content = <<~RUBY
+            module Sidekiq
+              module Orders
+                module Process
+                  class #{class_name}
+                    include Sidekiq::Worker
+                    sidekiq_options queue: :default
+                    
+                    def perform(*args)
+                      SidekiqJobs::Orders::Process::#{class_name}.new.perform(*args)
+                    end
+                  end
+                end
+              end
+            end
+          RUBY
+          
+          # Write the new file
+          File.write(target_file, new_content)
+          @fixed_files << target_file.sub(@path + '/', '')
+        end
         
         # Update the original file to call the new class
         transition_content = <<~RUBY
@@ -555,20 +609,32 @@ module RailsUpshift
         target_dir = File.join(@path, "app/jobs/sidekiq/orders/notifications")
         FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
         
-        # Create the new file with proper namespace and class name
+        # Check if target file already exists
         target_file = File.join(target_dir, "#{class_name.downcase}.rb")
-        new_content = content.dup
         
-        # Replace the module declarations
-        new_content.gsub!(/^module SidekiqJobs/, 'module Sidekiq')
-        new_content.gsub!(/^class (\w+)/, 'class \1')
-        
-        # Update references
-        new_content.gsub!(/SidekiqJobs::Orders::/, 'Sidekiq::Orders::')
-        
-        # Write the new file
-        File.write(target_file, new_content)
-        @fixed_files << target_file.sub(@path + '/', '')
+        unless File.exist?(target_file)
+          # Create the new file with proper namespace and class name
+          new_content = <<~RUBY
+            module Sidekiq
+              module Orders
+                module Notifications
+                  class #{class_name}
+                    include Sidekiq::Worker
+                    sidekiq_options queue: :default
+                    
+                    def perform(*args)
+                      SidekiqJobs::Orders::Notifications::#{class_name}.new.perform(*args)
+                    end
+                  end
+                end
+              end
+            end
+          RUBY
+          
+          # Write the new file
+          File.write(target_file, new_content)
+          @fixed_files << target_file.sub(@path + '/', '')
+        end
         
         # Update the original file to call the new class
         transition_content = <<~RUBY
@@ -600,6 +666,9 @@ module RailsUpshift
         File.write(file, transition_content)
         @fixed_files << file.sub(@path + '/', '')
       end
+    end
+    
+    def update_pos_status_jobs
       # --- Automated fix: CheckJob to Sidekiq::PosStatus::Check ---
       Dir.glob(File.join(@path, "app/jobs/**/check_job.rb")).each do |file|
         content = File.read(file)
@@ -609,19 +678,33 @@ module RailsUpshift
         target_dir = File.join(@path, "app/jobs/sidekiq/pos_status")
         FileUtils.mkdir_p(target_dir) unless Dir.exist?(target_dir)
         
-        # Create the new file with proper namespace and class name
+        # Check if target file already exists
         target_file = File.join(target_dir, "check.rb")
-        new_content = content.dup
         
-        # Replace the class declaration
-        new_content.gsub!(/class\s+CheckJob\s+<\s+ApplicationJob(.*?)end/m) do
-          class_body = $1
-          "module Sidekiq\n  module PosStatus\n    class Check < ApplicationJob#{class_body}    end\n  end\nend"
+        unless File.exist?(target_file)
+          # Create the new file with proper namespace and class name
+          new_content = <<~RUBY
+            module Sidekiq
+              module PosStatus
+                class Check < ApplicationJob
+                  queue_as :default
+                  
+                  def self.perform_later(*args)
+                    CheckJob.perform_later(*args)
+                  end
+                  
+                  def self.perform_now(*args)
+                    CheckJob.perform_now(*args)
+                  end
+                end
+              end
+            end
+          RUBY
+          
+          # Write the new file
+          File.write(target_file, new_content)
+          @fixed_files << target_file.sub(@path + '/', '')
         end
-        
-        # Write the new file
-        File.write(target_file, new_content)
-        @fixed_files << target_file.sub(@path + '/', '')
         
         # Update the original file to call the new class
         transition_content = <<~RUBY

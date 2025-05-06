@@ -202,4 +202,114 @@ RSpec.describe "RailsUpshift Order Jobs Namespace" do
       plugin_manager.instance_variable_set(:@plugins, {})
     end
   end
+  
+  it "handles existing files correctly during transition for order jobs" do
+    # Create directories for both old and new namespaces
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs', 'sidekiq_jobs', 'orders', 'process'))
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs', 'sidekiq_jobs', 'orders', 'notifications'))
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'orders', 'process'))
+    FileUtils.mkdir_p(File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'orders', 'notifications'))
+    
+    # Create a file with old namespace for process job
+    old_process_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq_jobs', 'orders', 'process', 'check_in.rb')
+    File.write(old_process_path, <<~RUBY)
+      module SidekiqJobs
+        module Orders
+          module Process
+            class CheckIn
+              include Sidekiq::Worker
+              sidekiq_options queue: :orders
+              
+              def perform(order_id)
+                # Process check-in order
+              end
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create a file with old namespace for notification job
+    old_notification_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq_jobs', 'orders', 'notifications', 'check_in.rb')
+    File.write(old_notification_path, <<~RUBY)
+      module SidekiqJobs
+        module Orders
+          module Notifications
+            class CheckIn
+              include Sidekiq::Worker
+              sidekiq_options queue: :notifications
+              
+              def perform(order_id)
+                # Send check-in notification
+              end
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create an existing file with new namespace for process job
+    new_process_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'orders', 'process', 'checkin.rb')
+    File.write(new_process_path, <<~RUBY)
+      module Sidekiq
+        module Orders
+          module Process
+            class Checkin
+              include Sidekiq::Worker
+              sidekiq_options queue: :orders
+              
+              def perform(order_id)
+                # Already migrated implementation
+                SidekiqJobs::Orders::Process::CheckIn.new.perform(order_id)
+              end
+            end
+          end
+        end
+      end
+    RUBY
+    
+    # Create the upgrader with update_job_namespaces option
+    analyzer = RailsUpshift::Analyzer.new(temp_dir)
+    issues = analyzer.analyze
+    
+    options = { 
+      update_job_namespaces: true,
+      verbose: false,
+      safe_mode: false
+    }
+    
+    upgrader = RailsUpshift::Upgrader.new(temp_dir, issues, options)
+    result = upgrader.upgrade
+    
+    # Verify that the original files were updated
+    expect(result[:fixed_files]).to include('app/jobs/sidekiq_jobs/orders/process/check_in.rb')
+    expect(result[:fixed_files]).to include('app/jobs/sidekiq_jobs/orders/notifications/check_in.rb')
+    
+    # Verify that the existing file was not modified
+    new_process_content = File.read(new_process_path)
+    expect(new_process_content).to include('module Sidekiq')
+    expect(new_process_content).to include('module Orders')
+    expect(new_process_content).to include('module Process')
+    expect(new_process_content).to include('class Checkin')
+    expect(new_process_content).to include('SidekiqJobs::Orders::Process::CheckIn.new.perform(order_id)')
+    
+    # Verify that a new notification job file was created
+    new_notification_path = File.join(temp_dir, 'app', 'jobs', 'sidekiq', 'orders', 'notifications', 'checkin.rb')
+    expect(File.exist?(new_notification_path)).to be true
+    
+    # Verify that the transition files were created correctly
+    transition_process_content = File.read(old_process_path)
+    expect(transition_process_content).to include('# This is a transition file that will be removed in the future')
+    expect(transition_process_content).to include('def self.method_missing(method_name, *args, &block)')
+    expect(transition_process_content).to include('Sidekiq::Orders::Process::CheckIn.send(method_name, *args, &block)')
+    expect(transition_process_content).to include('def self.perform_async(*args)')
+    expect(transition_process_content).to include('Sidekiq::Orders::Process::CheckIn.perform_async(*args)')
+    
+    transition_notification_content = File.read(old_notification_path)
+    expect(transition_notification_content).to include('# This is a transition file that will be removed in the future')
+    expect(transition_notification_content).to include('def self.method_missing(method_name, *args, &block)')
+    expect(transition_notification_content).to include('Sidekiq::Orders::Notifications::CheckIn.send(method_name, *args, &block)')
+    expect(transition_notification_content).to include('def self.perform_async(*args)')
+    expect(transition_notification_content).to include('Sidekiq::Orders::Notifications::CheckIn.perform_async(*args)')
+  end
 end
