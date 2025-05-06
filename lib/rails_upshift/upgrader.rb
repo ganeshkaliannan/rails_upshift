@@ -273,6 +273,12 @@ module RailsUpshift
         content.gsub!(/gem\s+['"]protected_attributes['"].*$/, "# gem 'protected_attributes' # Removed in Rails 5")
         content.gsub!(/gem\s+['"]activerecord-deprecated_finders['"].*$/, "# gem 'activerecord-deprecated_finders' # Removed in Rails 5")
         
+        # Add bootsnap gem for Rails 5.2.0 if not already present
+        unless content.include?('bootsnap')
+          # Add bootsnap gem at the end of the file
+          content << "\n# Added by rails_upshift for Rails 5.2.0\ngem 'bootsnap', '>= 1.1.0', require: false\n"
+        end
+        
         # Handle incompatible gems for Rails 5
         handle_incompatible_gems(content, "5.0.0", ruby_version)
         
@@ -337,6 +343,21 @@ module RailsUpshift
     end
     
     def update_config_files
+      return unless @options[:update_configs]
+      
+      # Update boot.rb for Rails 5.2+ to use bootsnap
+      boot_rb_path = File.join(@path, 'config', 'boot.rb')
+      if File.exist?(boot_rb_path) && Gem::Version.new(@target_version) >= Gem::Version.new("5.2.0")
+        boot_content = File.read(boot_rb_path)
+        
+        # Add bootsnap setup if not already present
+        unless boot_content.include?('bootsnap/setup')
+          boot_content.gsub!(/require 'bundler\/setup'.*$/, "require 'bundler/setup' # Set up gems listed in the Gemfile.\nrequire 'bootsnap/setup' # Speed up boot time by caching expensive operations.")
+          File.write(boot_rb_path, boot_content)
+          @fixed_files << boot_rb_path.sub(@path + '/', '')
+        end
+      end
+      
       # Update application.rb
       application_rb_path = File.join(@path, 'config', 'application.rb')
       if File.exist?(application_rb_path)
