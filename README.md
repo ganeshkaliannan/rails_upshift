@@ -173,7 +173,17 @@ After checking out the repo, run `bin/setup` to install dependencies. Then, run 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/rails_upshift.
+We welcome contributions to the rails_upshift gem! Check out our [contribution guidelines](CONTRIBUTING.md) for details on how to get started.
+
+Some ways you can contribute:
+- Report bugs and request features by creating issues
+- Submit pull requests to fix issues or add new features
+- Improve documentation
+- Add support for new Rails versions
+- Create new patterns for common upgrade scenarios
+- Add tests for existing functionality
+
+For more information on the internal architecture, check out our [flow diagrams](simplified_diagram_fixed.md).
 
 ## License
 
