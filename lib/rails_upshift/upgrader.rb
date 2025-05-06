@@ -302,7 +302,8 @@ module RailsUpshift
         "5.0.0" => [
           { pattern: /gem\s+['"]grape_on_rails_routes['"].*$/, replacement: "# gem 'grape_on_rails_routes' # Incompatible with Rails 5.x" },
           { pattern: /gem\s+['"]protected_attributes['"].*$/, replacement: "# gem 'protected_attributes' # Removed in Rails 5" },
-          { pattern: /gem\s+['"]activerecord-deprecated_finders['"].*$/, replacement: "# gem 'activerecord-deprecated_finders' # Removed in Rails 5" }
+          { pattern: /gem\s+['"]activerecord-deprecated_finders['"].*$/, replacement: "# gem 'activerecord-deprecated_finders' # Removed in Rails 5" },
+          { pattern: /gem\s+['"]rspec-rails['"],?\s*['"]?[^'"]*['"]?/, replacement: "gem 'rspec-rails', '~> 4.0' # Updated for Rails 5.x compatibility" }
         ]
       }
       
