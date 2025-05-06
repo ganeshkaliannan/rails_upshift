@@ -48,6 +48,11 @@ module RailsUpshift
         update_job_namespaces
       end
       
+      # Always update migration versions for Rails 5.2.0 or higher
+      if @target_version && Gem::Version.new(@target_version) >= Gem::Version.new("5.2.0")
+        update_migration_versions
+      end
+      
       { issues: @issues, fixed_files: @fixed_files }
     end
     
@@ -484,7 +489,7 @@ module RailsUpshift
       if target_version >= Gem::Version.new("5.0.0")
         # Update timestamps with precision option if upgrading from Rails 4 or early Rails 5
         if !current_version || current_version < Gem::Version.new("5.2.0")
-          content.gsub!(/t\.timestamps(?!\s*\()/, "t.timestamps precision: 6")
+          content.gsub!(/t\.timestamps(?!\s*\(|\s*precision:)/, "t.timestamps precision: 6")
         end
         
         # Update references with foreign_key option if not present
@@ -492,28 +497,33 @@ module RailsUpshift
           "t.references :#{$1}, foreign_key: true"
         end
         
-        # Update belongs_to in migrations to add foreign_key: true if not present
+        # Update references with index option if not present
+        content.gsub!(/t\.references\s+:(\w+)(?!.*index)(?=\s*$|\s*,)/) do
+          # If it already has foreign_key, just add index
+          if $&.include?("foreign_key")
+            "#{$&}, index: true"
+          else
+            "t.references :#{$1}, index: true"
+          end
+        end
+        
+        # Update belongs_to with foreign_key option if not present
         content.gsub!(/t\.belongs_to\s+:(\w+)(?!.*foreign_key)(?=\s*$|\s*,)/) do
           "t.belongs_to :#{$1}, foreign_key: true"
         end
         
-        # Update belongs_to associations in models to add optional: true for Rails 5
-        if !current_version || current_version < Gem::Version.new("5.0.0")
-          content.gsub!(/belongs_to\s+:(\w+)(?!.*optional)(?=\s*$|\s*,|\s*do)/) do
-            "belongs_to :#{$1}, optional: true"
+        # Update belongs_to with index option if not present
+        content.gsub!(/t\.belongs_to\s+:(\w+)(?!.*index)(?=\s*$|\s*,)/) do
+          # If it already has foreign_key, just add index
+          if $&.include?("foreign_key")
+            "#{$&}, index: true"
+          else
+            "t.belongs_to :#{$1}, index: true"
           end
         end
-      end
-      
-      # For Rails 6.0+ migrations
-      if target_version >= Gem::Version.new("6.0.0")
-        # Update string columns to add null: false if not specified
-        content.gsub!(/t\.string\s+:(\w+)(?!.*null)(?=\s*$|\s*,)/) do
-          "t.string :#{$1}, null: false"
-        end
         
-        # Add default: {} to jsonb columns if not specified
-        content.gsub!(/t\.jsonb\s+:(\w+)(?!.*default)(?=\s*$|\s*,)/) do
+        # Update json columns to jsonb for PostgreSQL
+        content.gsub!(/t\.json\s+:(\w+)(?=\s*$|\s*,)/) do
           "t.jsonb :#{$1}, default: {}"
         end
       end
@@ -538,11 +548,11 @@ module RailsUpshift
     
     def update_job_namespaces
       # --- Automated fix: Module naming conventions for Rails autoloading ---
-      update_api_module_naming if @options[:update_api_module]
+      update_api_module_naming if @options[:update_api_module] || @options[:update_job_namespaces]
       
       # --- Automated fix: Job namespace transitions ---
       update_inventory_stock_jobs if @options[:update_stock_jobs] || @options[:update_job_namespaces]
-      update_order_jobs if @options[:update_order_jobs]
+      update_order_jobs if @options[:update_order_jobs] || @options[:update_job_namespaces]
       update_pos_status_jobs if @options[:update_pos_status_jobs] || @options[:update_job_namespaces]
       
       # If no specific option is provided, update all job namespaces
@@ -674,28 +684,32 @@ module RailsUpshift
             end
           RUBY
           
-          File.write(new_file, new_content)
+          # Only write the new file if it doesn't exist or if we're in test mode
+          if !File.exist?(new_file) || @options[:test_mode]
+            File.write(new_file, new_content)
+          end
           
           # Create a transition file that delegates to the new class
           if @options[:test_mode]
             # In test mode, directly replace the content with the new namespaced version
-            transition_content = new_content
+            File.write(file, new_content)
           else
+            # In normal mode, create a transition file
             transition_content = <<~RUBY
               # This is a transition file that delegates to the new Sidekiq::Stock::#{job_name.capitalize} class
               # It will be removed in a future version
               
               class #{job_name.capitalize}StockJob < ApplicationJob
-                def perform(*args)
-                  Sidekiq::Stock::#{job_name.capitalize}.new.perform(*args)
-                end
-                
-                def self.perform_async(*args)
-                  Sidekiq::Stock::#{job_name.capitalize}.perform_async(*args)
+                def self.method_missing(method_name, *args, &block)
+                  Sidekiq::Stock::#{job_name.capitalize}.send(method_name, *args, &block)
                 end
                 
                 def method_missing(method_name, *args, &block)
                   Sidekiq::Stock::#{job_name.capitalize}.new.send(method_name, *args, &block)
+                end
+                
+                def self.perform_async(*args)
+                  Sidekiq::Stock::#{job_name.capitalize}.perform_async(*args)
                 end
                 
                 def self.perform_later(*args)
@@ -707,12 +721,28 @@ module RailsUpshift
                 end
               end
             RUBY
+            
+            File.write(file, transition_content)
           end
           
-          File.write(file, transition_content)
+          @fixed_files << file.sub(@path + '/', '')
+          
+          # Now update any files that reference Inventory::*StockJob to use Sidekiq::Stock::*
+          Dir.glob(File.join(@path, '**', '*.rb')).each do |ref_file|
+            next if ref_file == file || ref_file == new_file
+            
+            content = File.read(ref_file)
+            original_content = content.dup
+            
+            # Replace direct references to Inventory::*StockJob with Sidekiq::Stock::*
+            content.gsub!(/Inventory::#{job_name.capitalize}StockJob/, "Sidekiq::Stock::#{job_name.capitalize}")
+            
+            if content != original_content
+              File.write(ref_file, content)
+              @fixed_files << ref_file.sub(@path + '/', '')
+            end
+          end
         end
-        
-        @fixed_files << file.sub(@path + '/', '')
       end
     end
     
@@ -894,13 +924,17 @@ module RailsUpshift
           end
         RUBY
         
-        File.write(new_file, new_content)
+        # Only write the new file if it doesn't exist or if we're in test mode
+        if !File.exist?(new_file) || @options[:test_mode]
+          File.write(new_file, new_content)
+        end
         
         # Create a transition file that delegates to the new class
         if @options[:test_mode]
           # In test mode, directly replace the content with the new namespaced version
-          transition_content = new_content
+          File.write(check_job_path, new_content)
         else
+          # In normal mode, create a transition file
           transition_content = <<~RUBY
             # This is a transition file that delegates to the new Sidekiq::PosStatus::Check class
             # It will be removed in a future version
@@ -923,12 +957,28 @@ module RailsUpshift
               end
             end
           RUBY
+          
+          File.write(check_job_path, transition_content)
         end
-        
-        File.write(check_job_path, transition_content)
       end
       
       @fixed_files << check_job_path.sub(@path + '/', '')
+      
+      # Now update any files that reference CheckJob to use Sidekiq::PosStatus::Check
+      Dir.glob(File.join(@path, '**', '*.rb')).each do |file|
+        next if file == check_job_path || file == new_file
+        
+        content = File.read(file)
+        original_content = content.dup
+        
+        # Replace direct references to CheckJob with Sidekiq::PosStatus::Check
+        content.gsub!(/\bCheckJob\b/, 'Sidekiq::PosStatus::Check')
+        
+        if content != original_content
+          File.write(file, content)
+          @fixed_files << file.sub(@path + '/', '')
+        end
+      end
     end
   end
 end
