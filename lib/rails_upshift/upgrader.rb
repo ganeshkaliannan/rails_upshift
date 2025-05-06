@@ -541,9 +541,9 @@ module RailsUpshift
       update_api_module_naming if @options[:update_api_module]
       
       # --- Automated fix: Job namespace transitions ---
-      update_inventory_stock_jobs if @options[:update_stock_jobs]
+      update_inventory_stock_jobs if @options[:update_stock_jobs] || @options[:update_job_namespaces]
       update_order_jobs if @options[:update_order_jobs]
-      update_pos_status_jobs if @options[:update_pos_status_jobs]
+      update_pos_status_jobs if @options[:update_pos_status_jobs] || @options[:update_job_namespaces]
       
       # If no specific option is provided, update all job namespaces
       if @options[:update_job_namespaces]
@@ -638,7 +638,7 @@ module RailsUpshift
     end
     
     def update_inventory_stock_jobs
-      return unless @options[:update_stock_jobs]
+      return unless @options[:update_stock_jobs] || @options[:update_job_namespaces]
       
       puts "Updating Inventory::*StockJob to Sidekiq::Stock::* namespace" if @options[:verbose]
       
@@ -659,55 +659,55 @@ module RailsUpshift
         
         new_file = File.join(new_dir, "#{job_name.downcase}.rb")
         
-        # Create the new content with Sidekiq::Stock namespace
-        new_content = <<~RUBY
-          # frozen_string_literal: true
-          
-          module Sidekiq
-            module Stock
-              class #{job_name.capitalize} < ApplicationJob
-                queue_as :stock
-                
-                def perform(location_id)
-                  # Update stock from #{job_name.capitalize}
+        # Extract the job class content
+        class_content = content.match(/class\s+\w+StockJob\s+<\s+ApplicationJob.*?end/m)&.to_s
+        
+        if class_content
+          # Create the new file with proper namespace
+          new_content = <<~RUBY
+            module Sidekiq
+              module Stock
+                class #{job_name.capitalize} < ApplicationJob
+                  #{class_content.gsub(/class\s+\w+StockJob\s+<\s+ApplicationJob/, '').gsub(/^end$/, '').strip}
                 end
               end
             end
-          end
-        RUBY
-        
-        # Write the new file
-        File.write(new_file, new_content)
-        
-        # Update the old file with a transition implementation
-        if @options[:test_mode]
-          # In test mode, directly replace the content
-          File.write(file, new_content)
-        else
-          # In normal mode, create a transition file
-          transition_content = <<~RUBY
-            # frozen_string_literal: true
-            # This is a transition file that will be removed in the future
-            # It forwards calls to the new Sidekiq::Stock::#{job_name.capitalize} class
-            
-            class #{job_name.capitalize}StockJob < ApplicationJob
-              def self.method_missing(method_name, *args, &block)
-                Sidekiq::Stock::#{job_name.capitalize}.send(method_name, *args, &block)
-              end
-              
-              def method_missing(method_name, *args, &block)
-                Sidekiq::Stock::#{job_name.capitalize}.new.send(method_name, *args, &block)
-              end
-              
-              def self.perform_later(*args)
-                Sidekiq::Stock::#{job_name.capitalize}.perform_later(*args)
-              end
-              
-              def self.perform_now(*args)
-                Sidekiq::Stock::#{job_name.capitalize}.perform_now(*args)
-              end
-            end
           RUBY
+          
+          File.write(new_file, new_content)
+          
+          # Create a transition file that delegates to the new class
+          if @options[:test_mode]
+            # In test mode, directly replace the content with the new namespaced version
+            transition_content = new_content
+          else
+            transition_content = <<~RUBY
+              # This is a transition file that delegates to the new Sidekiq::Stock::#{job_name.capitalize} class
+              # It will be removed in a future version
+              
+              class #{job_name.capitalize}StockJob < ApplicationJob
+                def perform(*args)
+                  Sidekiq::Stock::#{job_name.capitalize}.new.perform(*args)
+                end
+                
+                def self.perform_async(*args)
+                  Sidekiq::Stock::#{job_name.capitalize}.perform_async(*args)
+                end
+                
+                def method_missing(method_name, *args, &block)
+                  Sidekiq::Stock::#{job_name.capitalize}.new.send(method_name, *args, &block)
+                end
+                
+                def self.perform_later(*args)
+                  Sidekiq::Stock::#{job_name.capitalize}.perform_later(*args)
+                end
+                
+                def self.perform_now(*args)
+                  Sidekiq::Stock::#{job_name.capitalize}.perform_now(*args)
+                end
+              end
+            RUBY
+          end
           
           File.write(file, transition_content)
         end
@@ -862,7 +862,7 @@ module RailsUpshift
     end
     
     def update_pos_status_jobs
-      return unless @options[:update_pos_status_jobs]
+      return unless @options[:update_pos_status_jobs] || @options[:update_job_namespaces]
       
       puts "Updating CheckJob to Sidekiq::PosStatus::Check namespace" if @options[:verbose]
       
@@ -879,55 +879,51 @@ module RailsUpshift
       
       new_file = File.join(new_dir, "check.rb")
       
-      # Create the new content with Sidekiq::PosStatus namespace
-      new_content = <<~RUBY
-        # frozen_string_literal: true
-        
-        module Sidekiq
-          module PosStatus
-            class Check < ApplicationJob
-              queue_as :default
-              
-              def perform(location_id)
-                # Check POS status
+      # Extract the job class content
+      class_content = content.match(/class\s+CheckJob\s+<\s+ApplicationJob.*?end/m)&.to_s
+      
+      if class_content
+        # Create the new file with proper namespace
+        new_content = <<~RUBY
+          module Sidekiq
+            module PosStatus
+              class Check < ApplicationJob
+                #{class_content.gsub(/class\s+CheckJob\s+<\s+ApplicationJob/, '').gsub(/^end$/, '').strip}
               end
             end
           end
-        end
-      RUBY
-      
-      # Write the new file
-      File.write(new_file, new_content)
-      
-      # Update the old file with a transition implementation
-      if @options[:test_mode]
-        # In test mode, directly replace the content
-        File.write(check_job_path, new_content)
-      else
-        # In normal mode, create a transition file
-        transition_content = <<~RUBY
-          # frozen_string_literal: true
-          # This is a transition file that will be removed in the future
-          # It forwards calls to the new Sidekiq::PosStatus::Check class
-          
-          class CheckJob < ApplicationJob
-            def self.method_missing(method_name, *args, &block)
-              Sidekiq::PosStatus::Check.send(method_name, *args, &block)
-            end
-            
-            def method_missing(method_name, *args, &block)
-              Sidekiq::PosStatus::Check.new.send(method_name, *args, &block)
-            end
-            
-            def self.perform_later(*args)
-              Sidekiq::PosStatus::Check.perform_later(*args)
-            end
-            
-            def self.perform_now(*args)
-              Sidekiq::PosStatus::Check.perform_now(*args)
-            end
-          end
         RUBY
+        
+        File.write(new_file, new_content)
+        
+        # Create a transition file that delegates to the new class
+        if @options[:test_mode]
+          # In test mode, directly replace the content with the new namespaced version
+          transition_content = new_content
+        else
+          transition_content = <<~RUBY
+            # This is a transition file that delegates to the new Sidekiq::PosStatus::Check class
+            # It will be removed in a future version
+            
+            class CheckJob < ApplicationJob
+              def self.method_missing(method_name, *args, &block)
+                Sidekiq::PosStatus::Check.send(method_name, *args, &block)
+              end
+              
+              def method_missing(method_name, *args, &block)
+                Sidekiq::PosStatus::Check.new.send(method_name, *args, &block)
+              end
+              
+              def self.perform_later(*args)
+                Sidekiq::PosStatus::Check.perform_later(*args)
+              end
+              
+              def self.perform_now(*args)
+                Sidekiq::PosStatus::Check.perform_now(*args)
+              end
+            end
+          RUBY
+        end
         
         File.write(check_job_path, transition_content)
       end
